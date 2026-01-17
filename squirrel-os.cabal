@@ -69,7 +69,12 @@ executable squirrel-os
 
     -- Other library packages from which modules are imported.
     build-depends:    base ^>=4.18.3.0
-
+             , text
+             , bytestring
+             , aeson
+             , http-client
+             , http-client-tls
+             , http-types
     -- Directories containing source files.
     hs-source-dirs:   app
 

@@ -1,0 +1,5 @@
+{
+  "haskell.serverExecutablePath": "haskell-language-server-wrapper",
+  "haskell.formattingProvider": "fourmolu",
+  "editor.formatOnSave": true
+}
