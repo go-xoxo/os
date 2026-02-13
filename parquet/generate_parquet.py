@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""
+Generate parquet database files from repository file investigation.
+Investigates all file extensions and creates structured parquet tables.
+"""
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import os
+import hashlib
+from datetime import datetime
+
+REPO_ROOT = "/home/user/os"
+PARQUET_DIR = os.path.join(REPO_ROOT, "parquet")
+
+EXCLUDE_DIRS = {".git", "dist-newstyle", "parquet"}
+
+
+def should_exclude(path):
+    parts = path.split(os.sep)
+    return any(d in EXCLUDE_DIRS for d in parts)
+
+
+def get_file_hash(filepath):
+    try:
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def count_lines(filepath):
+    try:
+        with open(filepath, "r", errors="replace") as f:
+            return sum(1 for _ in f)
+    except Exception:
+        return 0
+
+
+def is_binary(filepath):
+    try:
+        with open(filepath, "rb") as f:
+            chunk = f.read(1024)
+            return b"\x00" in chunk
+    except Exception:
+        return False
+
+
+def get_category(ext):
+    categories = {
+        ".hs": "Haskell Source",
+        ".hs-boot": "Haskell Boot",
+        ".hi": "Haskell Interface",
+        ".hi-boot": "Haskell Interface Boot",
+        ".o": "Object File",
+        ".o-boot": "Object Boot File",
+        ".cabal": "Cabal Config",
+        ".yaml": "YAML Config",
+        ".yml": "YAML Config",
+        ".json": "JSON Config",
+        ".md": "Markdown Documentation",
+        ".lock": "Lock File",
+        ".h": "C Header",
+        ".sample": "Sample/Template",
+        ".exe": "Executable Binary",
+        ".cache": "Cache File",
+        ".rev": "Revision File",
+        ".pack": "Pack File",
+        ".idx": "Index File",
+        "": "No Extension",
+    }
+    return categories.get(ext, "Other")
+
+
+def collect_all_files():
+    """Walk repository and collect metadata for every file."""
+    files = []
+    for root, dirs, filenames in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        for fname in filenames:
+            filepath = os.path.join(root, fname)
+            relpath = os.path.relpath(filepath, REPO_ROOT)
+            stat = os.stat(filepath)
+            _, ext = os.path.splitext(fname)
+            binary = is_binary(filepath)
+            files.append({
+                "file_path": relpath,
+                "file_name": fname,
+                "extension": ext if ext else "(none)",
+                "category": get_category(ext),
+                "directory": os.path.relpath(root, REPO_ROOT),
+                "size_bytes": stat.st_size,
+                "line_count": count_lines(filepath) if not binary else 0,
+                "is_binary": binary,
+                "modified_timestamp": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "sha256_hash": get_file_hash(filepath),
+            })
+    return files
+
+
+def build_files_table(files):
+    """Create parquet table: files inventory."""
+    schema = pa.schema([
+        ("file_path", pa.string()),
+        ("file_name", pa.string()),
+        ("extension", pa.string()),
+        ("category", pa.string()),
+        ("directory", pa.string()),
+        ("size_bytes", pa.int64()),
+        ("line_count", pa.int32()),
+        ("is_binary", pa.bool_()),
+        ("modified_timestamp", pa.string()),
+        ("sha256_hash", pa.string()),
+    ])
+    arrays = [
+        pa.array([f["file_path"] for f in files]),
+        pa.array([f["file_name"] for f in files]),
+        pa.array([f["extension"] for f in files]),
+        pa.array([f["category"] for f in files]),
+        pa.array([f["directory"] for f in files]),
+        pa.array([f["size_bytes"] for f in files], type=pa.int64()),
+        pa.array([f["line_count"] for f in files], type=pa.int32()),
+        pa.array([f["is_binary"] for f in files]),
+        pa.array([f["modified_timestamp"] for f in files]),
+        pa.array([f["sha256_hash"] for f in files]),
+    ]
+    return pa.table(arrays, schema=schema)
+
+
+def build_extensions_summary(files):
+    """Create parquet table: per-extension summary stats."""
+    ext_data = {}
+    for f in files:
+        ext = f["extension"]
+        if ext not in ext_data:
+            ext_data[ext] = {
+                "extension": ext,
+                "category": f["category"],
+                "file_count": 0,
+                "total_size_bytes": 0,
+                "total_lines": 0,
+                "min_size": float("inf"),
+                "max_size": 0,
+                "example_files": [],
+            }
+        d = ext_data[ext]
+        d["file_count"] += 1
+        d["total_size_bytes"] += f["size_bytes"]
+        d["total_lines"] += f["line_count"]
+        d["min_size"] = min(d["min_size"], f["size_bytes"])
+        d["max_size"] = max(d["max_size"], f["size_bytes"])
+        if len(d["example_files"]) < 3:
+            d["example_files"].append(f["file_path"])
+
+    rows = sorted(ext_data.values(), key=lambda r: r["file_count"], reverse=True)
+
+    schema = pa.schema([
+        ("extension", pa.string()),
+        ("category", pa.string()),
+        ("file_count", pa.int32()),
+        ("total_size_bytes", pa.int64()),
+        ("total_lines", pa.int32()),
+        ("avg_size_bytes", pa.float64()),
+        ("min_size_bytes", pa.int64()),
+        ("max_size_bytes", pa.int64()),
+        ("example_files", pa.string()),
+    ])
+
+    arrays = [
+        pa.array([r["extension"] for r in rows]),
+        pa.array([r["category"] for r in rows]),
+        pa.array([r["file_count"] for r in rows], type=pa.int32()),
+        pa.array([r["total_size_bytes"] for r in rows], type=pa.int64()),
+        pa.array([r["total_lines"] for r in rows], type=pa.int32()),
+        pa.array([r["total_size_bytes"] / r["file_count"] for r in rows], type=pa.float64()),
+        pa.array([r["min_size"] for r in rows], type=pa.int64()),
+        pa.array([r["max_size"] for r in rows], type=pa.int64()),
+        pa.array(["; ".join(r["example_files"]) for r in rows]),
+    ]
+    return pa.table(arrays, schema=schema)
+
+
+def build_directories_summary(files):
+    """Create parquet table: per-directory summary."""
+    dir_data = {}
+    for f in files:
+        d = f["directory"]
+        if d not in dir_data:
+            dir_data[d] = {
+                "directory": d,
+                "file_count": 0,
+                "total_size_bytes": 0,
+                "total_lines": 0,
+                "extensions": set(),
+                "file_list": [],
+            }
+        dd = dir_data[d]
+        dd["file_count"] += 1
+        dd["total_size_bytes"] += f["size_bytes"]
+        dd["total_lines"] += f["line_count"]
+        dd["extensions"].add(f["extension"])
+        dd["file_list"].append(f["file_name"])
+
+    rows = sorted(dir_data.values(), key=lambda r: r["directory"])
+
+    schema = pa.schema([
+        ("directory", pa.string()),
+        ("file_count", pa.int32()),
+        ("total_size_bytes", pa.int64()),
+        ("total_lines", pa.int32()),
+        ("extensions_found", pa.string()),
+        ("file_list", pa.string()),
+    ])
+
+    arrays = [
+        pa.array([r["directory"] for r in rows]),
+        pa.array([r["file_count"] for r in rows], type=pa.int32()),
+        pa.array([r["total_size_bytes"] for r in rows], type=pa.int64()),
+        pa.array([r["total_lines"] for r in rows], type=pa.int32()),
+        pa.array([", ".join(sorted(r["extensions"])) for r in rows]),
+        pa.array(["; ".join(r["file_list"]) for r in rows]),
+    ]
+    return pa.table(arrays, schema=schema)
+
+
+def build_haskell_analysis(files):
+    """Create parquet table: Haskell-specific analysis."""
+    hs_files = [f for f in files if f["extension"] == ".hs"]
+    if not hs_files:
+        return None
+
+    rows = []
+    for f in hs_files:
+        filepath = os.path.join(REPO_ROOT, f["file_path"])
+        modules = []
+        imports = []
+        has_pragmas = False
+        has_type_sigs = False
+        try:
+            with open(filepath, "r", errors="replace") as fh:
+                for line in fh:
+                    stripped = line.strip()
+                    if stripped.startswith("module "):
+                        modules.append(stripped.split()[1].rstrip("(").strip())
+                    elif stripped.startswith("import "):
+                        imp = stripped.replace("import", "").strip()
+                        if imp.startswith("qualified "):
+                            imp = imp.replace("qualified ", "")
+                        imports.append(imp.split()[0] if imp.split() else imp)
+                    elif stripped.startswith("{-#"):
+                        has_pragmas = True
+                    elif "::" in stripped and not stripped.startswith("--"):
+                        has_type_sigs = True
+        except Exception:
+            pass
+
+        rows.append({
+            "file_path": f["file_path"],
+            "module_name": modules[0] if modules else "(unknown)",
+            "line_count": f["line_count"],
+            "size_bytes": f["size_bytes"],
+            "import_count": len(imports),
+            "imports": "; ".join(sorted(set(imports))),
+            "has_language_pragmas": has_pragmas,
+            "has_type_signatures": has_type_sigs,
+        })
+
+    schema = pa.schema([
+        ("file_path", pa.string()),
+        ("module_name", pa.string()),
+        ("line_count", pa.int32()),
+        ("size_bytes", pa.int64()),
+        ("import_count", pa.int32()),
+        ("imports", pa.string()),
+        ("has_language_pragmas", pa.bool_()),
+        ("has_type_signatures", pa.bool_()),
+    ])
+
+    arrays = [
+        pa.array([r["file_path"] for r in rows]),
+        pa.array([r["module_name"] for r in rows]),
+        pa.array([r["line_count"] for r in rows], type=pa.int32()),
+        pa.array([r["size_bytes"] for r in rows], type=pa.int64()),
+        pa.array([r["import_count"] for r in rows], type=pa.int32()),
+        pa.array([r["imports"] for r in rows]),
+        pa.array([r["has_language_pragmas"] for r in rows]),
+        pa.array([r["has_type_signatures"] for r in rows]),
+    ]
+    return pa.table(arrays, schema=schema)
+
+
+def build_investigation_metadata():
+    """Create parquet table: investigation metadata."""
+    schema = pa.schema([
+        ("key", pa.string()),
+        ("value", pa.string()),
+    ])
+    meta = [
+        ("project_name", "squirrel-os"),
+        ("project_version", "0.1.0.0"),
+        ("project_language", "Haskell"),
+        ("project_license", "MIT"),
+        ("project_author", "xoxo"),
+        ("build_system", "cabal"),
+        ("cabal_version", "3.0"),
+        ("ghc_base_version", "4.18.3.0"),
+        ("default_language", "Haskell2010"),
+        ("formatter", "fourmolu"),
+        ("ci_system", "GitHub Actions"),
+        ("ci_runner", "ubuntu-latest"),
+        ("investigation_date", datetime.now().isoformat()),
+        ("investigation_tool", "pyarrow parquet generator"),
+    ]
+    arrays = [
+        pa.array([m[0] for m in meta]),
+        pa.array([m[1] for m in meta]),
+    ]
+    return pa.table(arrays, schema=schema)
+
+
+def main():
+    print("=== Parquet File Investigation Database Generator ===\n")
+
+    print("Collecting all files...")
+    files = collect_all_files()
+    print(f"  Found {len(files)} files\n")
+
+    # 1. Files inventory
+    print("Writing files_inventory.parquet...")
+    t1 = build_files_table(files)
+    pq.write_table(t1, os.path.join(PARQUET_DIR, "files_inventory.parquet"))
+    print(f"  {t1.num_rows} rows, {t1.num_columns} columns\n")
+
+    # 2. Extensions summary
+    print("Writing extensions_summary.parquet...")
+    t2 = build_extensions_summary(files)
+    pq.write_table(t2, os.path.join(PARQUET_DIR, "extensions_summary.parquet"))
+    print(f"  {t2.num_rows} rows, {t2.num_columns} columns\n")
+
+    # 3. Directories summary
+    print("Writing directories_summary.parquet...")
+    t3 = build_directories_summary(files)
+    pq.write_table(t3, os.path.join(PARQUET_DIR, "directories_summary.parquet"))
+    print(f"  {t3.num_rows} rows, {t3.num_columns} columns\n")
+
+    # 4. Haskell analysis
+    print("Writing haskell_analysis.parquet...")
+    t4 = build_haskell_analysis(files)
+    if t4:
+        pq.write_table(t4, os.path.join(PARQUET_DIR, "haskell_analysis.parquet"))
+        print(f"  {t4.num_rows} rows, {t4.num_columns} columns\n")
+    else:
+        print("  No Haskell files found, skipping.\n")
+
+    # 5. Project metadata
+    print("Writing investigation_metadata.parquet...")
+    t5 = build_investigation_metadata()
+    pq.write_table(t5, os.path.join(PARQUET_DIR, "investigation_metadata.parquet"))
+    print(f"  {t5.num_rows} rows, {t5.num_columns} columns\n")
+
+    print("=== All parquet files generated successfully! ===")
+
+
+if __name__ == "__main__":
+    main()
