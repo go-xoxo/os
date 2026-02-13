@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <rect width="100" height="100" rx="8" fill="#34495e"/>
+  <!-- Tangram-like pieces -->
+  <!-- Large triangle top-left -->
+  <polygon points="10,10 50,50 10,50" fill="#5fb4cb"/>
+  <!-- Large triangle bottom-right -->
+  <polygon points="50,50 90,50 90,90" fill="#60b5cc"/>
+  <!-- Medium triangle top-right -->
+  <polygon points="55,10 90,10 90,45" fill="#7fd13b"/>
+  <!-- Small triangle bottom-left -->
+  <polygon points="10,55 35,80 10,80" fill="#f0ad00"/>
+  <!-- Parallelogram center -->
+  <polygon points="50,10 90,50 55,50 15,10" fill="#e74c3c"/>
+  <!-- Small square center-bottom -->
+  <polygon points="38,58 52,58 52,72 38,72" fill="#f0ad00"/>
+  <!-- Small triangle -->
+  <polygon points="55,55 90,90 55,90" fill="#5fb4cb"/>
+</svg>
