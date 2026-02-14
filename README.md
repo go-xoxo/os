@@ -29,9 +29,27 @@ squirrel-os/
 ├── src/
 │   └── LLM/
 │       └── OpenAI.hs    # OpenAI API client module
-├── squirrel-os.cabal     # Project configuration
-└── fourmolu.yaml         # Code formatter settings
+├── mcp-server/          # 🐿️ HASEL Master MCP Server
+│   ├── src/             # TypeScript source files
+│   ├── dist/            # Compiled JavaScript
+│   └── README.md        # MCP server documentation
+├── squirrel-os.cabal    # Project configuration
+└── fourmolu.yaml        # Code formatter settings
 ```
+
+## HASEL Master MCP Server
+
+This repository now includes a powerful Model Context Protocol (MCP) server that provides:
+
+- 🌐 **Web Operations**: Fetch, scrape, and crawl web content
+- 🪐 **IPFS**: Distributed content storage and retrieval
+- 🎭 **Browser Automation**: Playwright and Puppeteer integration
+- 🏠 **DynDNS**: Dynamic DNS updates (DuckDNS, No-IP, etc.)
+- 📋 **Clipboard**: Persistent clipboard history and search
+- 🔺 **NussKette**: Composable pipeline execution
+- 🌰 **HASEL Monads**: Type-safe functional data transformations
+
+See [mcp-server/README.md](mcp-server/README.md) for complete documentation.
 
 ## Related Projects
 

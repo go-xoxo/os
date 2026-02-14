@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "hasel": {
+      "command": "node",
+      "args": [
+        "/absolute/path/to/os/mcp-server/dist/index.js"
+      ],
+      "env": {
+        "DUCKDNS_TOKEN": "your-token-here",
+        "IPFS_API_URL": "http://127.0.0.1:5001"
+      }
+    }
+  }
+}
