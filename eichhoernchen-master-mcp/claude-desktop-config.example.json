@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "eichhoernchen-master": {
+      "command": "node",
+      "args": [
+        "/home/user/os/eichhoernchen-master-mcp/dist/index.js"
+      ],
+      "env": {
+        "IPFS_GATEWAY": "https://ipfs.io",
+        "IPFS_API": "https://ipfs.io",
+        "DYNDNS_PROVIDER": "duckdns",
+        "DYNDNS_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
