@@ -4,6 +4,7 @@ module LLM.OpenAI where
 
 import Data.Aeson
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 import Network.HTTP.Types.Header
