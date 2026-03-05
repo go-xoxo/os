@@ -12,7 +12,7 @@ import Hasel.Types
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import System.Directory (doesDirectoryExist, doesFileExist)
+import System.Directory (doesDirectoryExist)
 
 -- | 🌰→🪺  jeder Wert ist Monade ist Nuss
 nuss :: a -> Maybe a
@@ -39,10 +39,11 @@ filterFuchs = filter (not . isFuchs)
       ]
 
 -- | ¬🦊 Für Pfad-Prüfung: ist ein Pfad-Segment ein Fuchs?
+-- 🦊 Füchse = Verzeichnisse die NICHT gescannt werden sollen
 isFuchsSegment :: FilePath -> Bool
 isFuchsSegment seg = seg `elem`
   [ ".git", "node_modules", ".stack-work", "dist-newstyle"
-  , ".obsidian", "__pycache__", ".claude"
+  , ".obsidian", "__pycache__"
   ]
 
 -- | ¬🐍 Filter: keine gefährlichen Dateien
@@ -68,13 +69,20 @@ printStats nodes = do
 
 -- | ❄️ Freeze-Ergebnis als Text
 freezeToText :: FreezeResult -> Text
-freezeToText fr = T.unlines
+freezeToText fr = T.unlines $
   [ "❄️ GEFRIERTROCKNUNG — Ergebnis"
   , "═══════════════════════════════════"
-  , T.concat ["🚪 Verschoben:  ", T.pack (show (frMoved fr))]
-  , T.concat ["📁 Erstellt:    ", T.pack (show (frCreated fr))]
-  , T.concat ["📝 Generiert:   ", T.pack (show (frGenerated fr))]
-  , T.concat ["⏭️  Übersprungen: ", T.pack (show (frSkipped fr))]
+  , T.concat ["🔒 Modus:       ", T.pack (show (frMode fr))]
+  ] ++
+  (case frMode fr of
+    DryRun ->
+      [ "   (Keine Dateien wurden verändert)" ]
+    Execute ->
+      [ T.concat ["🚪 Verschoben:  ", T.pack (show (frMoved fr))]
+      , T.concat ["📁 Erstellt:    ", T.pack (show (frCreated fr))]
+      , T.concat ["📝 Generiert:   ", T.pack (show (frGenerated fr))]
+      ]) ++
+  [ T.concat ["⏭️  Übersprungen: ", T.pack (show (frSkipped fr))]
   , "═══════════════════════════════════"
   , frManifest fr
   ]

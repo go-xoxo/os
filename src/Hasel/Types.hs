@@ -7,7 +7,6 @@
 module Hasel.Types where
 
 import Data.Text (Text)
-import Data.Time.Clock (UTCTime)
 
 -- | 🐿️ Subfamilien der Sciuridae (5 Familien, 284 Arten)
 data Subfamily
@@ -50,6 +49,12 @@ data MoveCommand
   | Skip    FilePath Text      -- überspringen mit Grund
   deriving (Show, Eq)
 
+-- | 🔒 Pipeline-Modus: DryRun zeigt nur was passieren würde
+data PipelineMode
+  = DryRun    -- 🔍 Nur anzeigen, nichts verändern
+  | Execute   -- 🚀 Tatsächlich ausführen
+  deriving (Show, Eq)
+
 -- | ❄️ Gefriergetrocknetes Ergebnis
 data FreezeResult = FreezeResult
   { frCommands  :: [MoveCommand]  -- ausgeführte Befehle
@@ -58,6 +63,7 @@ data FreezeResult = FreezeResult
   , frGenerated :: Int            -- 📝 generierte Dateien
   , frSkipped   :: Int            -- ⏭️ übersprungene Dateien
   , frManifest  :: Text           -- ❄️ destilliertes Manifest
+  , frMode      :: PipelineMode   -- 🔒 Modus (DryRun/Execute)
   } deriving (Show)
 
 -- | 🏷️ Emoji-Zuordnung für Kategorien
@@ -85,3 +91,51 @@ categoryTargetDir Projekt         = "projekte"
 categoryTargetDir Vendored        = "vendor"
 categoryTargetDir Artefakt        = "build"
 categoryTargetDir Unbekannt       = "unsorted"
+
+-- | 🛡️ Geschützte Pfade — Dateien hier werden NIE verschoben
+-- Diese Verzeichnisse sind bereits am richtigen Ort im KOBEL.
+protectedPrefixes :: [String]
+protectedPrefixes =
+  [ "app/"             -- 🚪 Haskell Einstiegspunkt
+  , "src/"             -- 🌲 Quellcode (Hasel, LLM)
+  , ".vscode/"         -- ⚙️ IDE-Konfiguration
+  , ".github/"         -- 🐙 GitHub Actions/Config
+  , ".claude/"         -- 🤖 Claude Config
+  , "projekte/"        -- 🔨 Projekt-Configs (.cabal)
+  , "IHaskell/"        -- 📦 Vendored (IHaskell)
+  , ".stack-work/"     -- ⚙️ Build-Cache
+  , "dist-newstyle/"   -- ⚙️ Cabal-Build-Cache
+  , "node_modules/"    -- 📦 JS-Abhängigkeiten
+  ]
+
+-- | 🛡️ Geschützte Root-Dateien — werden NIE verschoben
+protectedRootFiles :: [String]
+protectedRootFiles =
+  [ "README.md"
+  , "CHANGELOG.md"
+  , "LICENSE"
+  , ".gitignore"
+  , "package.json"
+  , "bun.lockb"
+  , "tsconfig.json"
+  , "index.jsx"
+  , "Cargo.toml"
+  , "Cargo.lock"
+  , "fourmolu.yaml"
+  , "squirrel-os.cabal"
+  , "CLAUDE.md"
+  ]
+
+-- | 🛡️ Ist dieser relative Pfad geschützt?
+isProtectedPath :: FilePath -> Bool
+isProtectedPath relPath =
+  -- Root-Dateien (kein / im Pfad) sind geschützt
+  notElem '/' relPath
+  -- Bekannte Root-Dateien explizit
+  || relPath `elem` protectedRootFiles
+  -- Dateien in geschützten Verzeichnissen
+  || any (`isPrefixOfStr` relPath) protectedPrefixes
+  where
+    isPrefixOfStr [] _          = True
+    isPrefixOfStr _ []          = False
+    isPrefixOfStr (x:xs) (y:ys) = x == y && isPrefixOfStr xs ys

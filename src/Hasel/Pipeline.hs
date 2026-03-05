@@ -11,15 +11,13 @@ import Hasel.Kernel (filterFuchs, filterSchlange, printStats, freezeToText)
 import Hasel.Kobel (scanKobel, categorizeAll)
 import Hasel.Readme (generateReadme)
 
-import Control.Monad (forM_, when, unless)
-import Data.List (nub, group, sort, sortBy)
-import Data.Ord (comparing, Down(..))
+import Control.Monad (forM_, unless)
+import Data.List (nub)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.Directory
     ( createDirectoryIfMissing
-    , doesDirectoryExist
     , doesFileExist
     , renamePath
     )
@@ -61,33 +59,41 @@ powershellen root nodes = do
 nodeToCommands :: FilePath -> KobelNode -> [MoveCommand]
 nodeToCommands root node =
   case knCategory node of
+    -- 🛡️ Geschützte Pfade: NIEMALS verschieben
+    _ | isProtectedPath (knRelPath node) -> [Skip (knPath node) "geschützter Pfad"]
     -- Dateien die schon am richtigen Ort sind: überspringen
-    _ | isAlreadyInPlace root node -> [Skip (knPath node) "bereits am Zielort"]
+    _ | isAlreadyInPlace node -> [Skip (knPath node) "bereits am Zielort"]
     -- Build-Artefakte: überspringen (nicht verschieben)
     Artefakt  -> [Skip (knPath node) "Build-Artefakt"]
     -- Vendored: überspringen
     Vendored  -> [Skip (knPath node) "vendored"]
     -- Alles andere: verschieben
-    cat       -> [Move (knPath node) (targetPath root node)]
+    _         -> [Move (knPath node) (targetPath root node)]
 
 -- | Ist der Knoten bereits im Zielverzeichnis?
-isAlreadyInPlace :: FilePath -> KobelNode -> Bool
-isAlreadyInPlace _ node =
+isAlreadyInPlace :: KobelNode -> Bool
+isAlreadyInPlace node =
   let target = categoryTargetDir (knCategory node)
       rel    = knRelPath node
   in target `isPrefixOfPath` rel
   where
-    isPrefixOfPath prefix path = (prefix ++ "/") `isPrefixOf` path
+    isPrefixOfPath prefix path = (prefix ++ "/") `strIsPrefixOf` path
                               || prefix == path
-    isPrefixOf [] _          = True
-    isPrefixOf _ []          = False
-    isPrefixOf (x:xs) (y:ys) = x == y && isPrefixOf xs ys
+    strIsPrefixOf [] _          = True
+    strIsPrefixOf _ []          = False
+    strIsPrefixOf (x:xs) (y:ys) = x == y && strIsPrefixOf xs ys
 
--- | Zielpfad berechnen
+-- | Zielpfad berechnen — bewahrt Unterverzeichnis-Struktur
 targetPath :: FilePath -> KobelNode -> FilePath
 targetPath root node =
-  root </> categoryTargetDir (knCategory node) </> takeFileName' (knRelPath node)
+  root </> categoryTargetDir (knCategory node) </> preserveSubpath (knRelPath node)
   where
+    -- Bewahre den relativen Pfad ab der ersten Ebene
+    -- z.B. "data/emojifiles/hs/foo.hs" → "emojifiles/hs/foo.hs"
+    -- z.B. "foo.hs" (root-level) → "foo.hs"
+    preserveSubpath p = case break (== '/') p of
+      (_, '/':rest) -> if null rest then takeFileName' p else rest
+      _             -> takeFileName' p
     takeFileName' p = case break (== '/') (reverse p) of
       (name, _) -> reverse name
 
@@ -109,22 +115,52 @@ adaptieren cmds = do
     isValid (GenFile _ _) = True
 
 -- | 🚪→❄️ GEFRIERTROCKNEN: Execute commands + produce manifest
-gefriertrocknen :: [MoveCommand] -> IO FreezeResult
-gefriertrocknen cmds = do
-  TIO.putStrLn "🚪→❄️ gefriertrocknen :: execute..."
-  counts <- mapM executeCmd cmds
-  let moved   = length [() | CmdMoved   <- counts]
-      created = length [() | CmdCreated <- counts]
-      genned  = length [() | CmdGenned  <- counts]
-      skipped = length [() | CmdSkipped <- counts]
+gefriertrocknen :: PipelineMode -> [MoveCommand] -> IO FreezeResult
+gefriertrocknen mode cmds = do
+  case mode of
+    DryRun -> do
+      TIO.putStrLn "🚪→❄️ gefriertrocknen :: DRY-RUN (keine Änderungen)..."
+      TIO.putStrLn ""
+      -- Im DryRun nur die Move-Befehle anzeigen
+      let moves = [(s,d) | Move s d <- cmds]
+          mkdirs' = [d | MkDir d <- cmds]
+          gens   = [p | GenFile p _ <- cmds]
+      TIO.putStrLn $ T.concat ["  📁 ", T.pack (show (length mkdirs')), " Verzeichnisse würden erstellt"]
+      TIO.putStrLn $ T.concat ["  🚪 ", T.pack (show (length moves)), " Dateien würden verschoben"]
+      TIO.putStrLn $ T.concat ["  📝 ", T.pack (show (length gens)), " Dateien würden generiert"]
+      TIO.putStrLn ""
+      -- Zeige die ersten 20 Moves als Vorschau
+      let preview = take 20 moves
+      forM_ preview $ \(s, d) ->
+        TIO.putStrLn $ T.concat ["  🔍 ", T.pack s, " → ", T.pack d]
+      if length moves > 20
+        then TIO.putStrLn $ T.concat ["  ... und ", T.pack (show (length moves - 20)), " weitere"]
+        else return ()
+    Execute -> do
+      TIO.putStrLn "🚪→❄️ gefriertrocknen :: EXECUTE..."
+      counts <- mapM executeCmd cmds
+      let moved   = length [() | CmdMoved   <- counts]
+          created = length [() | CmdCreated <- counts]
+          genned  = length [() | CmdGenned  <- counts]
+          skipped = length [() | CmdSkipped <- counts]
+      TIO.putStrLn $ T.concat ["  ✅ ", T.pack (show moved), " verschoben, ",
+                                T.pack (show created), " erstellt, ",
+                                T.pack (show genned), " generiert, ",
+                                T.pack (show skipped), " übersprungen"]
+  -- Ergebnis zusammenbauen (für beide Modi)
+  let moves   = length [() | Move _ _ <- cmds]
+      mkdirs' = length [() | MkDir _  <- cmds]
+      gens    = length [() | GenFile _ _ <- cmds]
+      skips   = length [() | Skip _ _ <- cmds]
       manifest = buildManifest cmds
-  let result = FreezeResult
+      result = FreezeResult
         { frCommands  = cmds
-        , frMoved     = moved
-        , frCreated   = created
-        , frGenerated = genned
-        , frSkipped   = skipped
+        , frMoved     = if mode == DryRun then 0 else moves
+        , frCreated   = if mode == DryRun then 0 else mkdirs'
+        , frGenerated = if mode == DryRun then 0 else gens
+        , frSkipped   = skips
         , frManifest  = manifest
+        , frMode      = mode
         }
   TIO.putStrLn (freezeToText result)
   return result
@@ -164,7 +200,7 @@ executeCmd (GenFile path content) = do
   exists <- doesFileExist path
   unless exists $ TIO.writeFile path content
   return CmdGenned
-executeCmd (Skip path reason) = do
+executeCmd (Skip _ _) =
   return CmdSkipped
 
 -- | README-Befehle für alle Zielordner generieren
@@ -183,10 +219,10 @@ buildManifest cmds = T.unlines $
   [ "-- ❄️ KOBEL MANIFEST — gefriergetrocknet"
   , "-- λ manifest → 🪺 {"
   ] ++
-  [ T.concat ["--   ", describeCmds cmds'] | cmds' <- groupCmds cmds ] ++
+  map (\l -> T.concat ["--   ", l]) (summarize cmds) ++
   [ "-- } ∎" ]
   where
-    groupCmds cs =
+    summarize cs =
       let moves   = [() | Move _ _ <- cs]
           mkdirs  = [() | MkDir _ <- cs]
           gens    = [() | GenFile _ _ <- cs]
@@ -196,19 +232,21 @@ buildManifest cmds = T.unlines $
          , T.concat ["📝 GenFile: ", T.pack (show (length gens))]
          , T.concat ["⏭️  Skip:    ", T.pack (show (length skips))]
          ]
-    describeCmds = id  -- passthrough, already formatted
 
 -- | 🔄 Der komplette Pipeline: haselifizieren >=> nuifizieren >=> powershellen >=> adaptieren >=> gefriertrocknen
-pipeline :: FilePath -> IO FreezeResult
-pipeline root = do
+pipeline :: PipelineMode -> FilePath -> IO FreezeResult
+pipeline mode root = do
   TIO.putStrLn "═══════════════════════════════════════════════"
   TIO.putStrLn "🐿️ KOBEL REORGANISATION — HASEL PIPELINE v1.0"
+  case mode of
+    DryRun  -> TIO.putStrLn "🔒 MODUS: DRY-RUN (keine Änderungen)"
+    Execute -> TIO.putStrLn "🚀 MODUS: EXECUTE (Dateien werden verschoben!)"
   TIO.putStrLn "═══════════════════════════════════════════════"
   nodes    <- haselifizieren root
   classified <- nuifizieren nodes
   cmds     <- powershellen root classified
   adapted  <- adaptieren cmds
-  result   <- gefriertrocknen adapted
+  result   <- gefriertrocknen mode adapted
   TIO.putStrLn "═══════════════════════════════════════════════"
   TIO.putStrLn "🐿️ λ selbst → selbst selbst >>= ∎"
   return result
